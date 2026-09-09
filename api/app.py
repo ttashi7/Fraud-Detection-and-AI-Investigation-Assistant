@@ -1,88 +1,79 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 import pandas as pd
 import numpy as np
 import shap
+import joblib
+import logging
+from pathlib import Path
 
-from api.detection_agent import detect_fraud
+from api.detection_agent import detect_fraud          # requires the rename fix
 from api.decision_agent import make_decision
 from api.investigation_agent import investigate_transaction
 
-from pathlib import Path
-import joblib
+logger = logging.getLogger(__name__)
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+MODELS_DIR = BASE_DIR / "models"
+
+# --- Load the model BUNDLE from notebook 06: model + features + thresholds ---
+bundle = joblib.load(MODELS_DIR / "xgb_hybrid_model.pkl")
+model = bundle["model"]
+FEATURES = bundle["features"]                        # single source of truth
+THRESHOLDS = {
+    "block": bundle["block_threshold"],
+    "investigate": bundle["investigate_threshold"],
+    "anomaly": bundle["anomaly_threshold"],
+}
+
+explainer = shap.TreeExplainer(model)
 
 app = FastAPI(title="Agentic Fraud Detection API")
 
 
-# Load model for SHAP explanations
-BASE_DIR = Path(__file__).resolve().parent.parent
-MODEL_PATH = BASE_DIR / "models" / "xgb_fraud_model.pkl"
-
-model = joblib.load(MODEL_PATH)
-explainer = shap.TreeExplainer(model)
-
-features = [
-    "TransactionAmt",
-    "txn_count_1h",
-    "txn_count_24h",
-    "txn_count_7d",
-    "avg_amt_1h",
-    "avg_amt_24h",
-    "avg_amt_7d",
-    "max_amt_24h",
-    "amount_zscore_24h",
-    "velocity_risk",
-    "is_night_txn"
-]
-
-
 @app.get("/")
 def home():
-    return {"message": "Agentic Fraud Detection API Running"}
+    return {"message": "Agentic Fraud Detection API Running",
+            "model_features": len(FEATURES),
+            "thresholds": THRESHOLDS}
 
 
 @app.post("/predict_fraud")
 def predict_fraud(transaction: dict):
 
-    # Convert request to dataframe
-    df = pd.DataFrame([transaction])
+    # Detection agent now returns BOTH scores
+    scores = detect_fraud(transaction)
+    fraud_score = float(scores["fraud_probability"])
+    anomaly_score = float(scores["anomaly_score"])
+    logger.info("fraud_score=%.4f anomaly_score=%.4f", fraud_score, anomaly_score)
 
-    # --------------------------
-    # Detection Agent
-    # --------------------------
-    fraud_score = float(detect_fraud(transaction))
-    print("Fraud score:", fraud_score)
-
-    # --------------------------
-    # Decision Agent
-    # --------------------------
-    decision = make_decision(fraud_score)
-
-    # Default summary
-    summary = "Transaction appears normal."
+    # Decision agent applies the three-tier policy from the bundle
+    decision = make_decision(fraud_score, anomaly_score, THRESHOLDS)
 
     explanations = []
+    summary = "Transaction appears normal."
 
-    # --------------------------
-    # Investigation Agent (only if suspicious)
-    # --------------------------
+    # Investigation agent only runs on non-APPROVE (saves LLM calls)
     if decision != "APPROVE":
+        df = pd.DataFrame([transaction])
+        missing = [f for f in FEATURES if f not in df.columns]
+        if missing:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Request missing features: {missing}",
+            )
 
-        shap_values = explainer.shap_values(df[features])
-
-        # Top 3 important features
-        top_features = np.argsort(np.abs(shap_values[0]))[::-1][:3]
-
-        for idx in top_features:
-            explanations.append({
-                "feature": features[idx],
-                "impact": float(shap_values[0][idx])
-            })
-
+        shap_values = explainer.shap_values(df[FEATURES])[0]
+        top_features = np.argsort(np.abs(shap_values))[::-1][:3]
+        explanations = [
+            {"feature": FEATURES[i], "impact": float(shap_values[i])}
+            for i in top_features
+        ]
         summary = investigate_transaction(explanations)
 
     return {
-        "fraud_probability": float(fraud_score),
+        "fraud_probability": fraud_score,
+        "anomaly_score": anomaly_score,
         "decision": decision,
         "explanations": explanations,
-        "investigation_summary": summary
+        "investigation_summary": summary,
     }
