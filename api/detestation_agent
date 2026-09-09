@@ -1,0 +1,30 @@
+import joblib
+import pandas as pd
+from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+MODEL_PATH = BASE_DIR / "models" / "xgb_fraud_model.pkl"
+
+model = joblib.load(MODEL_PATH)
+
+features = [
+    "TransactionAmt",
+    "txn_count_1h",
+    "txn_count_24h",
+    "txn_count_7d",
+    "avg_amt_1h",
+    "avg_amt_24h",
+    "avg_amt_7d",
+    "max_amt_24h",
+    "amount_zscore_24h",
+    "velocity_risk",
+    "is_night_txn"
+]
+
+def detect_fraud(transaction):
+
+    df = pd.DataFrame([transaction])
+
+    score = model.predict_proba(df[features])[0][1]
+
+    return score
