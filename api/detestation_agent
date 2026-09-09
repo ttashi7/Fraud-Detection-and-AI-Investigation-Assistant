@@ -1,30 +1,66 @@
+"""Detection agent: scores a transaction with BOTH models.
+
+- Hybrid XGBoost (notebook 06 bundle)  -> fraud_probability
+- Isolation Forest (notebook 05 bundle) -> anomaly_score
+
+The anomaly score is computed FIRST because the hybrid model consumes
+anomaly_score as an input feature. The Isolation Forest bundle carries
+its own preprocessing (log1p columns, train-fitted scaler, train-window
+normalization stats), so serving transforms exactly match training.
+"""
 import joblib
+import numpy as np
 import pandas as pd
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-MODEL_PATH = BASE_DIR / "models" / "xgb_fraud_model.pkl"
+MODELS_DIR = BASE_DIR / "models"
 
-model = joblib.load(MODEL_PATH)
+xgb_bundle = joblib.load(MODELS_DIR / "xgb_hybrid_model.pkl")
+iso_bundle = joblib.load(MODELS_DIR / "iforest_anomaly_model.pkl")
 
-features = [
-    "TransactionAmt",
-    "txn_count_1h",
-    "txn_count_24h",
-    "txn_count_7d",
-    "avg_amt_1h",
-    "avg_amt_24h",
-    "avg_amt_7d",
-    "max_amt_24h",
-    "amount_zscore_24h",
-    "velocity_risk",
-    "is_night_txn"
-]
+model = xgb_bundle["model"]
+FEATURES = xgb_bundle["features"]            # includes anomaly_score
 
-def detect_fraud(transaction):
+iso = iso_bundle["model"]
+ISO_FEATURES = iso_bundle["features"]
+LOG_COLS = iso_bundle["log_cols"]
+SCALER = iso_bundle["scaler"]
+SCORE_MIN = iso_bundle["score_min"]
+SCORE_MAX = iso_bundle["score_max"]
 
+
+def prepare_features(transaction: dict) -> pd.DataFrame:
+    """Validate the request and derive any missing computed features."""
     df = pd.DataFrame([transaction])
 
-    score = model.predict_proba(df[features])[0][1]
+    if "velocity_risk" not in df.columns:    # same formula as notebooks
+        df["velocity_risk"] = (
+            df["txn_count_1h"] / df["txn_count_24h"].clip(lower=1)
+        ).clip(0, 1)
 
-    return score
+    needed = [f for f in FEATURES if f != "anomaly_score"]
+    missing = [f for f in needed if f not in df.columns]
+    if missing:
+        raise ValueError(f"Request missing features: {missing}")
+    return df
+
+
+def _anomaly_score(df: pd.DataFrame) -> float:
+    """Replicate notebook 05's transform chain exactly."""
+    X = df[ISO_FEATURES].copy()
+    for c in LOG_COLS:
+        X[c] = np.log1p(X[c])
+    raw = -iso.score_samples(SCALER.transform(X))[0]
+    return float(np.clip((raw - SCORE_MIN) / (SCORE_MAX - SCORE_MIN), 0, 1))
+
+
+def detect_fraud(transaction: dict) -> dict:
+    """Return both scores; decision_agent combines them."""
+    df = prepare_features(transaction)
+    anomaly = _anomaly_score(df)
+
+    df["anomaly_score"] = anomaly            # hybrid model input
+    fraud_prob = float(model.predict_proba(df[FEATURES])[0][1])
+
+    return {"fraud_probability": fraud_prob, "anomaly_score": anomaly}
