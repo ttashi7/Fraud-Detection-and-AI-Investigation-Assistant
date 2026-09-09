@@ -1,26 +1,32 @@
 """Detection agent: scores a transaction with BOTH models.
 
-- Hybrid XGBoost (notebook 06 bundle)  -> fraud_probability
-- Isolation Forest (notebook 05 bundle) -> anomaly_score
+- XGBoost production model (notebook 06 bundle) -> fraud_probability
+- Isolation Forest (notebook 05 bundle)         -> anomaly_score
 
-The anomaly score is computed FIRST because the hybrid model consumes
-anomaly_score as an input feature. The Isolation Forest bundle carries
-its own preprocessing (log1p columns, train-fitted scaler, train-window
-normalization stats), so serving transforms exactly match training.
+Notebook 06's A/B test shipped the base model (hybrid delta was within
+noise), so the anomaly score feeds the decision-tier backstop in
+decision_agent — it is NOT a model input. The Isolation Forest bundle
+carries its own preprocessing (log1p columns, train-fitted scaler,
+train-window normalization stats), so serving transforms exactly
+match training.
 """
 import joblib
 import numpy as np
 import pandas as pd
 from pathlib import Path
 
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 MODELS_DIR = BASE_DIR / "models"
 
-xgb_bundle = joblib.load(MODELS_DIR / "xgb_hybrid_model.pkl")
+
+xgb_bundle = joblib.load(MODELS_DIR / "xgb_production_model.pkl")
 iso_bundle = joblib.load(MODELS_DIR / "iforest_anomaly_model.pkl")
 
+
 model = xgb_bundle["model"]
-FEATURES = xgb_bundle["features"]            # includes anomaly_score
+FEATURES = xgb_bundle["features"]            # 74 base features, no anomaly_score
+
 
 iso = iso_bundle["model"]
 ISO_FEATURES = iso_bundle["features"]
@@ -43,6 +49,8 @@ def prepare_features(transaction: dict) -> pd.DataFrame:
     missing = [f for f in needed if f not in df.columns]
     if missing:
         raise ValueError(f"Request missing features: {missing}")
+
+    df[needed] = df[needed].apply(pd.to_numeric, errors="coerce")  # JSON nulls -> NaN
     return df
 
 
@@ -59,8 +67,10 @@ def detect_fraud(transaction: dict) -> dict:
     """Return both scores; decision_agent combines them."""
     df = prepare_features(transaction)
     anomaly = _anomaly_score(df)
-
-    df["anomaly_score"] = anomaly            # hybrid model input
     fraud_prob = float(model.predict_proba(df[FEATURES])[0][1])
-
     return {"fraud_probability": fraud_prob, "anomaly_score": anomaly}
+
+
+def get_feature_vector(df: pd.DataFrame) -> pd.DataFrame:
+    """Exact feature matrix the model consumes (order-matched to training)."""
+    return df[FEATURES]

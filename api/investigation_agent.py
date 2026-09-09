@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Investigation agent: LLM-generated review summary for analysts.
 
 Turns model evidence (SHAP drivers, triggered rule, scores) into a

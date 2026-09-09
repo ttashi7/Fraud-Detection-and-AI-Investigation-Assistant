@@ -1,7 +1,9 @@
+from __future__ import annotations
+
 """Decision agent: three-tier fraud policy.
 
 Thresholds come from the model bundle exported by notebook 06
-(models/xgb_hybrid_model.pkl), so the API always applies the same
+(models/xgb_production_model.pkl), so the API always applies the same
 policy that was evaluated on the future test window.
 
 Tiers:
@@ -12,7 +14,9 @@ Tiers:
     APPROVE     -> everything else
 """
 
-DEFAULT_THRESHOLDS = {"block": 0.75, "investigate": 0.40, "anomaly": 0.80}
+# Fallbacks = the policy evaluated in notebooks 04/06 on the future
+# test window. At runtime the model bundle's thresholds override these.
+DEFAULT_THRESHOLDS = {"block": 0.90, "investigate": 0.70, "anomaly": 0.80}
 
 
 def make_decision(
