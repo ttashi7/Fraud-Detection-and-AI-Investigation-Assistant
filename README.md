@@ -1,6 +1,6 @@
-# Hybrid Transaction Fraud Analysis
+# Fraud Detection and AI Investigation Assistant
 
-A Python project combining supervised fraud scoring, anomaly detection, model explanations, and optional AI-generated review summaries through a FastAPI service and Streamlit dashboard.
+A Python project combining supervised fraud scoring, anomaly detection, model explanations, and AI-generated review summaries through a FastAPI service and Streamlit dashboard.
 
 The project explores how transaction history can support a fraud-review workflow: score a transaction, identify the rule that triggered an alert, explain the supervised model’s output, and present evidence for human review.
 
