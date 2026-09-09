@@ -1,0 +1,41 @@
+from openai import OpenAI
+from dotenv import load_dotenv
+import os
+
+# Load environment variables
+load_dotenv()
+
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+def investigate_transaction(explanations):
+
+    feature_list = []
+
+    for item in explanations:
+        feature_list.append(
+            f"{item['feature']} (impact: {item['impact']:.3f})"
+        )
+
+    feature_text = ", ".join(feature_list)
+
+    prompt = f"""
+You are a fraud investigation assistant.
+
+The fraud detection model flagged a transaction.
+
+Important features influencing the decision were:
+{feature_text}
+
+Write a short investigation summary explaining why this transaction may be suspicious.
+"""
+
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": "You are a fraud investigation analyst."},
+            {"role": "user", "content": prompt}
+        ],
+        temperature=0.2
+    )
+
+    return response.choices[0].message.content
